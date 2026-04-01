@@ -13,8 +13,7 @@ When activated, the extension traverses the DOM and replaces every text node wit
 A `MutationObserver` catches dynamically injected content (SPAs, infinite scroll, AJAX updates) and scrambles it on the fly.
 
 ### Demo
-
-https://github.com/archangel0x01/privacy-screen/releases/download/v1.1.0/output.mp4
+https://github.com/user-attachments/assets/11569f7e-21d6-47a0-b44f-015b086551e6
 
 ## Features
 
