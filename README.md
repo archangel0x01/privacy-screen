@@ -14,7 +14,7 @@ A `MutationObserver` catches dynamically injected content (SPAs, infinite scroll
 
 ### Demo
 
-<video src="output.mp4" controls width="100%"></video>
+https://github.com/archangel0x01/privacy-screen/releases/download/v1.1.0/output.mp4
 
 ## Features
 
