@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 260px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 20px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    .header svg {
+      width: 22px;
+      height: 22px;
+      fill: #7f5af0;
+      flex-shrink: 0;
+    }
+
+    .header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #ffffffdd;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #16213e;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+    }
+
+    .toggle-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-width: 170px;
+    }
+
+    .toggle-label {
+      font-size: 13px;
+      color: #e0e0e0;
+      font-weight: 500;
+    }
+
+    .toggle-desc {
+      font-size: 10px;
+      color: #666;
+      line-height: 1.3;
+    }
+
+    .switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      inset: 0;
+      background: #333;
+      border-radius: 24px;
+      cursor: pointer;
+      transition: background 0.25s;
+    }
+
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      bottom: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.25s;
+    }
+
+    input:checked + .slider {
+      background: #7f5af0;
+    }
+
+    input:checked + .slider::before {
+      transform: translateX(20px);
+    }
+
+    .divider {
+      height: 1px;
+      background: #ffffff10;
+      margin: 6px 0;
+    }
+
+    .url-display {
+      text-align: center;
+      margin-top: 10px;
+      font-size: 10px;
+      color: #555;
+      word-break: break-all;
+      line-height: 1.4;
+    }
+
+    .url-display span {
+      color: #7f5af0;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+    <h1>Privacy Screen</h1>
+  </div>
+
+  <div class="toggle-row">
+    <div class="toggle-info">
+      <span class="toggle-label">All pages</span>
+      <span class="toggle-desc">Scramble every page until turned off</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="globalToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="toggle-row">
+    <div class="toggle-info">
+      <span class="toggle-label">This site only</span>
+      <span class="toggle-desc">Scramble only this origin permanently</span>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="urlToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="url-display" id="urlDisplay"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
