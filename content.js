@@ -259,47 +259,71 @@
     collectTrackedTextNodes(element).forEach(scrambleNode);
   }
 
+  function getDirectTrackedTextNodes(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return [];
+
+    const nodes = [];
+    for (const child of element.childNodes) {
+      if (
+        child.nodeType === Node.TEXT_NODE &&
+        isMeaningfulTextNode(child) &&
+        originalTexts.has(child)
+      ) {
+        nodes.push(child);
+      }
+    }
+    return nodes;
+  }
+
   function findHoverTarget(event) {
     const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
     for (const entry of path) {
       if (!(entry instanceof Element)) continue;
       if (shouldSkipElementSubtree(entry)) continue;
-      if (collectTrackedTextNodes(entry, 1).length > 0) {
+      if (getDirectTrackedTextNodes(entry).length > 0) {
         return entry;
       }
     }
     return null;
   }
 
-  function handleMouseOver(event) {
-    if (!active) return;
-    const target = findHoverTarget(event);
-    if (target === currentHovered) return;
+  function updateHoveredElement(nextHovered) {
+    if (nextHovered === currentHovered) return;
 
     if (currentHovered) {
       concealElement(currentHovered);
     }
-    currentHovered = target;
+    currentHovered = nextHovered;
     if (currentHovered) {
       revealElement(currentHovered);
     }
   }
 
+  function clearHoveredElement() {
+    updateHoveredElement(null);
+  }
+
+  function handleMouseMove(event) {
+    if (!active) return;
+    updateHoveredElement(findHoverTarget(event));
+  }
+
   function handleMouseOut(event) {
     if (!active || !currentHovered) return;
-    if (event.relatedTarget && isNodeWithinElement(event.relatedTarget, currentHovered)) return;
-    concealElement(currentHovered);
-    currentHovered = null;
+    if (event.relatedTarget) return;
+    clearHoveredElement();
   }
 
   function attachHoverListeners() {
-    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mousemove", handleMouseMove, true);
     document.addEventListener("mouseout", handleMouseOut, true);
+    window.addEventListener("blur", clearHoveredElement, true);
   }
 
   function detachHoverListeners() {
-    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mousemove", handleMouseMove, true);
     document.removeEventListener("mouseout", handleMouseOut, true);
+    window.removeEventListener("blur", clearHoveredElement, true);
     currentHovered = null;
   }
 
