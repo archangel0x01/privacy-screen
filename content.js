@@ -4,18 +4,26 @@
   if (window.__privacyScreenLoaded) return;
   window.__privacyScreenLoaded = true;
 
+  const XHTML_NS = "http://www.w3.org/1999/xhtml";
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "NOSCRIPT", "INPUT", "TEXTAREA", "SELECT", "CODE", "PRE",
   ]);
+  const OBSERVED_ATTRIBUTES = ["class", "style", "hidden", "open", "aria-hidden"];
+  const FOLLOW_UP_RESCAN_DELAYS_MS = [0, 150, 500, 1500];
 
   const LOWER = "abcdefghijklmnopqrstuvwxyz";
   const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const DIGITS = "0123456789";
 
   const originalTexts = new WeakMap();
-  let observer = null;
+  const scrambledTexts = new WeakMap();
+  const rootObservers = new Map();
   let active = false;
   let mutationPaused = false;
+  let currentHovered = null;
+  let pendingMutations = [];
+  let mutationTimer = null;
+  let followUpRescanTimers = [];
 
   function scrambleChar(ch) {
     if (LOWER.includes(ch)) return LOWER[Math.floor(Math.random() * 26)];
@@ -34,162 +42,255 @@
     if (!el) return false;
     if (el.isContentEditable) return true;
     if (el.getAttribute && el.getAttribute("role") === "textbox") return true;
-    if (el.getAttribute && el.getAttribute("contenteditable") === "true") return true;
+    if (el.getAttribute) {
+      const value = el.getAttribute("contenteditable");
+      if (value && value !== "false") return true;
+    }
+    return false;
+  }
+
+  function shouldSkipElementSubtree(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if (SKIP_TAGS.has(el.tagName)) return true;
+    if (el.namespaceURI && el.namespaceURI !== XHTML_NS) return true;
+    if (isEditableElement(el)) return true;
     return false;
   }
 
   function shouldSkipNode(node) {
-    let el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-    while (el) {
-      if (SKIP_TAGS.has(el.tagName)) return true;
-      if (el.namespaceURI && el.namespaceURI !== "http://www.w3.org/1999/xhtml") return true;
-      if (isEditableElement(el)) return true;
-      el = el.parentElement;
+    let current = node.nodeType === Node.ELEMENT_NODE ? node : node.parentNode;
+    while (current) {
+      if (current.nodeType === Node.ELEMENT_NODE && shouldSkipElementSubtree(current)) {
+        return true;
+      }
+      current = getTraversalParent(current);
     }
     return false;
+  }
+
+  function isMeaningfulTextNode(textNode) {
+    return !!(textNode && textNode.nodeType === Node.TEXT_NODE && textNode.textContent && textNode.textContent.trim());
   }
 
   function isInsideIframe() {
     try { return window.self !== window.top; } catch (_) { return true; }
   }
 
-  function getTextNodes(root) {
-    const nodes = [];
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        if (!node.textContent.trim()) return NodeFilter.FILTER_REJECT;
-        if (shouldSkipNode(node)) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    });
-    while (walker.nextNode()) nodes.push(walker.currentNode);
-    return nodes;
+  function getTraversalParent(node) {
+    if (!node) return null;
+    if (node.parentNode) return node.parentNode;
+    const root = node.getRootNode ? node.getRootNode() : null;
+    return root && root.host ? root.host : null;
   }
 
-  function scrambleNode(textNode) {
-    if (!textNode.textContent.trim()) return;
-    if (shouldSkipNode(textNode)) return;
-    if (!originalTexts.has(textNode)) {
-      originalTexts.set(textNode, textNode.textContent);
+  function isNodeWithinElement(node, element) {
+    let current = node;
+    while (current) {
+      if (current === element) return true;
+      current = getTraversalParent(current);
     }
-    const scrambled = scrambleString(originalTexts.get(textNode));
-    if (textNode.textContent !== scrambled) {
-      mutationPaused = true;
-      textNode.textContent = scrambled;
+    return false;
+  }
+
+  function withPausedMutations(fn) {
+    mutationPaused = true;
+    try {
+      fn();
+    } finally {
       mutationPaused = false;
     }
   }
 
-  function unscrambleNode(textNode) {
-    if (originalTexts.has(textNode)) {
-      const original = originalTexts.get(textNode);
-      if (textNode.textContent !== original) {
-        mutationPaused = true;
-        textNode.textContent = original;
-        mutationPaused = false;
+  function setNodeText(textNode, text) {
+    if (textNode.textContent === text) return;
+    withPausedMutations(() => {
+      textNode.textContent = text;
+    });
+  }
+
+  function walkNode(node, callbacks) {
+    if (!node) return;
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      callbacks.onText?.(node);
+      return;
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      if (shouldSkipElementSubtree(node)) return;
+      callbacks.onElement?.(node);
+      if (node.shadowRoot) {
+        callbacks.onShadowRoot?.(node.shadowRoot);
+        walkNode(node.shadowRoot, callbacks);
       }
+    } else if (node.nodeType === Node.DOCUMENT_FRAGMENT_NODE && node.host) {
+      callbacks.onShadowRoot?.(node);
+    }
+
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      walkNode(child, callbacks);
     }
   }
 
-  function scrambleAll() {
-    getTextNodes(document.body).forEach(scrambleNode);
+  function getDocumentRoot() {
+    return document.documentElement || document;
   }
 
-  function unscrambleAll() {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) unscrambleNode(walker.currentNode);
-  }
-
-  function getTextNodesInElement(el) {
+  function collectTrackedTextNodes(root, limit = Number.POSITIVE_INFINITY) {
     const nodes = [];
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      if (originalTexts.has(walker.currentNode)) nodes.push(walker.currentNode);
+
+    function visit(node) {
+      if (!node || nodes.length >= limit) return false;
+
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (originalTexts.has(node)) {
+          nodes.push(node);
+        }
+        return nodes.length < limit;
+      }
+
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        if (shouldSkipElementSubtree(node)) return true;
+        if (node.shadowRoot && visit(node.shadowRoot) === false) return false;
+      }
+
+      for (let child = node.firstChild; child; child = child.nextSibling) {
+        if (visit(child) === false) return false;
+      }
+
+      return true;
     }
+
+    visit(root);
     return nodes;
   }
 
-  function findHoverTarget(el) {
-    while (el) {
-      const hasDirectText = Array.from(el.childNodes).some(
-        (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim()
-      );
-      if (hasDirectText && originalTexts.has(
-        Array.from(el.childNodes).find(
-          (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim()
-        )
-      )) {
-        return el;
+  function isInHoveredElement(textNode) {
+    return !!(currentHovered && isNodeWithinElement(textNode, currentHovered));
+  }
+
+  function scrambleNode(textNode) {
+    if (!isMeaningfulTextNode(textNode)) return;
+    if (shouldSkipNode(textNode)) return;
+    if (!originalTexts.has(textNode)) {
+      originalTexts.set(textNode, textNode.textContent);
+    }
+
+    if (isInHoveredElement(textNode)) {
+      setNodeText(textNode, originalTexts.get(textNode));
+      return;
+    }
+
+    const scrambled = scrambleString(originalTexts.get(textNode));
+    scrambledTexts.set(textNode, scrambled);
+    setNodeText(textNode, scrambled);
+  }
+
+  function unscrambleNode(textNode) {
+    if (originalTexts.has(textNode)) {
+      setNodeText(textNode, originalTexts.get(textNode));
+    }
+  }
+
+  function syncLiveTextNode(textNode) {
+    if (!isMeaningfulTextNode(textNode)) return;
+    if (shouldSkipNode(textNode)) return;
+
+    if (originalTexts.has(textNode)) {
+      const original = originalTexts.get(textNode);
+      const scrambled = scrambledTexts.get(textNode);
+      if (textNode.textContent === original || textNode.textContent === scrambled) {
+        return;
       }
-      el = el.parentElement;
+    }
+
+    originalTexts.set(textNode, textNode.textContent);
+    if (!isInHoveredElement(textNode)) {
+      scrambleNode(textNode);
+    }
+  }
+
+  function rescanSubtree(root) {
+    walkNode(root, {
+      onText(textNode) {
+        if (active) {
+          syncLiveTextNode(textNode);
+        }
+      },
+      onShadowRoot(shadowRoot) {
+        observeRoot(shadowRoot);
+      },
+    });
+  }
+
+  function scrambleAll() {
+    rescanSubtree(getDocumentRoot());
+  }
+
+  function unscrambleAll() {
+    walkNode(getDocumentRoot(), {
+      onText(textNode) {
+        unscrambleNode(textNode);
+      },
+    });
+  }
+
+  function revealElement(element) {
+    collectTrackedTextNodes(element).forEach(unscrambleNode);
+  }
+
+  function concealElement(element) {
+    collectTrackedTextNodes(element).forEach(scrambleNode);
+  }
+
+  function findHoverTarget(event) {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [event.target];
+    for (const entry of path) {
+      if (!(entry instanceof Element)) continue;
+      if (shouldSkipElementSubtree(entry)) continue;
+      if (collectTrackedTextNodes(entry, 1).length > 0) {
+        return entry;
+      }
     }
     return null;
   }
 
-  let currentHovered = null;
-
-  function handleMouseOver(e) {
+  function handleMouseOver(event) {
     if (!active) return;
-    const target = findHoverTarget(e.target);
+    const target = findHoverTarget(event);
     if (target === currentHovered) return;
 
     if (currentHovered) {
-      getTextNodesInElement(currentHovered).forEach(scrambleNode);
+      concealElement(currentHovered);
     }
     currentHovered = target;
     if (currentHovered) {
-      getTextNodesInElement(currentHovered).forEach(unscrambleNode);
+      revealElement(currentHovered);
     }
   }
 
-  function handleMouseOut(e) {
+  function handleMouseOut(event) {
     if (!active || !currentHovered) return;
-    if (e.relatedTarget && currentHovered.contains(e.relatedTarget)) return;
-    getTextNodesInElement(currentHovered).forEach(scrambleNode);
+    if (event.relatedTarget && isNodeWithinElement(event.relatedTarget, currentHovered)) return;
+    concealElement(currentHovered);
     currentHovered = null;
   }
 
   function attachHoverListeners() {
-    document.body.addEventListener("mouseover", handleMouseOver, true);
-    document.body.addEventListener("mouseout", handleMouseOut, true);
+    document.addEventListener("mouseover", handleMouseOver, true);
+    document.addEventListener("mouseout", handleMouseOut, true);
   }
 
   function detachHoverListeners() {
-    document.body.removeEventListener("mouseover", handleMouseOver, true);
-    document.body.removeEventListener("mouseout", handleMouseOut, true);
+    document.removeEventListener("mouseover", handleMouseOver, true);
+    document.removeEventListener("mouseout", handleMouseOut, true);
     currentHovered = null;
   }
 
-  let pendingMutations = [];
-  let mutationTimer = null;
+  function observeRoot(root) {
+    if (!root || rootObservers.has(root)) return;
 
-  function processMutationBatch() {
-    if (!active) { pendingMutations = []; return; }
-
-    const nodesToProcess = new Set();
-    for (const mutation of pendingMutations) {
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-          nodesToProcess.add(node);
-        } else if (node.nodeType === Node.ELEMENT_NODE) {
-          if (SKIP_TAGS.has(node.tagName)) continue;
-          if (isEditableElement(node)) continue;
-          getTextNodes(node).forEach((tn) => nodesToProcess.add(tn));
-        }
-      }
-      if (mutation.type === "characterData" && mutation.target.nodeType === Node.TEXT_NODE) {
-        if (!originalTexts.has(mutation.target)) {
-          nodesToProcess.add(mutation.target);
-        }
-      }
-    }
-    pendingMutations = [];
-    nodesToProcess.forEach(scrambleNode);
-  }
-
-  function startObserver() {
-    if (observer) return;
-    observer = new MutationObserver((mutations) => {
+    const observer = new MutationObserver((mutations) => {
       if (!active || mutationPaused) return;
       pendingMutations.push(...mutations);
       if (!mutationTimer) {
@@ -199,70 +300,143 @@
         });
       }
     });
-    observer.observe(document.body, {
+
+    observer.observe(root, {
       childList: true,
       subtree: true,
       characterData: true,
+      attributes: true,
+      attributeFilter: OBSERVED_ATTRIBUTES,
+    });
+
+    rootObservers.set(root, observer);
+  }
+
+  function processMutationBatch() {
+    if (!active) {
+      pendingMutations = [];
+      return;
+    }
+
+    const textNodesToProcess = new Set();
+    const rootsToRescan = new Set();
+
+    for (const mutation of pendingMutations) {
+      if (mutation.type === "characterData" && mutation.target.nodeType === Node.TEXT_NODE) {
+        textNodesToProcess.add(mutation.target);
+        continue;
+      }
+
+      if (mutation.type === "attributes" && mutation.target.nodeType === Node.ELEMENT_NODE) {
+        rootsToRescan.add(mutation.target);
+        continue;
+      }
+
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          textNodesToProcess.add(node);
+        } else if (
+          node.nodeType === Node.ELEMENT_NODE ||
+          node.nodeType === Node.DOCUMENT_FRAGMENT_NODE
+        ) {
+          rootsToRescan.add(node);
+        }
+      }
+    }
+
+    pendingMutations = [];
+
+    rootsToRescan.forEach((root) => {
+      rescanSubtree(root);
+    });
+    textNodesToProcess.forEach((textNode) => {
+      syncLiveTextNode(textNode);
     });
   }
 
-  function stopObserver() {
-    if (observer) {
+  function clearFollowUpRescans() {
+    followUpRescanTimers.forEach((timerId) => {
+      window.clearTimeout(timerId);
+    });
+    followUpRescanTimers = [];
+  }
+
+  function scheduleFollowUpRescans() {
+    clearFollowUpRescans();
+    FOLLOW_UP_RESCAN_DELAYS_MS.forEach((delay) => {
+      const timerId = window.setTimeout(() => {
+        if (active) {
+          rescanSubtree(getDocumentRoot());
+        }
+      }, delay);
+      followUpRescanTimers.push(timerId);
+    });
+  }
+
+  function startObservers() {
+    observeRoot(getDocumentRoot());
+    walkNode(getDocumentRoot(), {
+      onShadowRoot(shadowRoot) {
+        observeRoot(shadowRoot);
+      },
+    });
+  }
+
+  function stopObservers() {
+    rootObservers.forEach((observer) => {
       observer.disconnect();
-      observer = null;
-    }
+    });
+    rootObservers.clear();
     if (mutationTimer) {
       cancelAnimationFrame(mutationTimer);
       mutationTimer = null;
     }
     pendingMutations = [];
+    clearFollowUpRescans();
   }
 
   function activate() {
     if (isInsideIframe()) return;
     if (active) return;
     active = true;
-    scrambleAll();
     attachHoverListeners();
-    startObserver();
+    startObservers();
+    scrambleAll();
+    scheduleFollowUpRescans();
   }
 
   function deactivate() {
     if (!active) return;
     active = false;
-    stopObserver();
+    stopObservers();
     unscrambleAll();
     detachHoverListeners();
   }
 
-  function getPageOrigin() {
-    try { return new URL(window.location.href).origin; } catch (_) { return ""; }
-  }
+  window.addEventListener("load", () => {
+    if (active) {
+      rescanSubtree(getDocumentRoot());
+    }
+  }, true);
+  window.addEventListener("pageshow", () => {
+    if (active) {
+      rescanSubtree(getDocumentRoot());
+    }
+  }, true);
 
-  function checkAndAutoActivate() {
-    chrome.storage.local.get(["globalEnabled", "urlList"], (data) => {
-      const origin = getPageOrigin();
-      const urls = data.urlList || [];
-      if (data.globalEnabled || urls.includes(origin)) {
-        activate();
-        chrome.runtime.sendMessage({
-          action: "setBadge",
-          state: true,
-          reason: data.globalEnabled ? "global" : "url",
-        });
-      }
-    });
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", checkAndAutoActivate);
-  } else {
-    checkAndAutoActivate();
-  }
+  activate();
+  chrome.runtime.sendMessage({
+    action: "setBadge",
+    state: true,
+  });
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.action === "activate") {
       activate();
+      chrome.runtime.sendMessage({
+        action: "setBadge",
+        state: true,
+      });
       sendResponse({ ok: true });
     } else if (msg.action === "deactivate") {
       deactivate();

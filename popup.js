@@ -13,10 +13,13 @@ function originFromUrl(url) {
   try { return new URL(url).origin; } catch (_) { return ""; }
 }
 
-async function sendToTab(tabId, msg) {
+async function sendToTab(tabId, msg, injectIfMissing = true) {
   try {
     return await chrome.tabs.sendMessage(tabId, msg);
   } catch {
+    if (!injectIfMissing) {
+      return null;
+    }
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ["content.js"],
@@ -48,7 +51,7 @@ async function applyState(tab) {
 
   await sendToTab(tab.id, {
     action: shouldBeActive ? "activate" : "deactivate",
-  });
+  }, shouldBeActive);
 
   chrome.runtime.sendMessage({
     action: "setBadge",
@@ -62,13 +65,8 @@ globalToggle.addEventListener("change", async () => {
   if (!tab?.id) return;
 
   await chrome.storage.local.set({ globalEnabled: globalToggle.checked });
-
-  if (globalToggle.checked) {
-    chrome.runtime.sendMessage({ action: "activateAllTabs" });
-  } else {
-    chrome.runtime.sendMessage({ action: "deactivateNonUrlTabs" });
-    await applyState(tab);
-  }
+  await chrome.runtime.sendMessage({ action: "syncSettings" });
+  await applyState(tab);
 });
 
 urlToggle.addEventListener("change", async () => {
@@ -85,6 +83,7 @@ urlToggle.addEventListener("change", async () => {
   }
 
   await chrome.storage.local.set({ urlList: urls });
+  await chrome.runtime.sendMessage({ action: "syncSettings" });
   await applyState(tab);
 });
 
