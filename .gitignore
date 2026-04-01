@@ -1,7 +1,6 @@
 *.crx
 *.pem
 *.zip
-*.mp4
 .DS_Store
 Thumbs.db
 node_modules/

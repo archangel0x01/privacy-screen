@@ -12,6 +12,10 @@ When activated, the extension traverses the DOM and replaces every text node wit
 
 A `MutationObserver` catches dynamically injected content (SPAs, infinite scroll, AJAX updates) and scrambles it on the fly.
 
+### Demo
+
+<video src="output.mp4" controls width="100%"></video>
+
 ## Features
 
 - **Two activation modes**
