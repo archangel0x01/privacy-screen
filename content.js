@@ -196,18 +196,34 @@
     if (!isMeaningfulTextNode(textNode)) return;
     if (shouldSkipNode(textNode)) return;
 
-    if (originalTexts.has(textNode)) {
-      const original = originalTexts.get(textNode);
-      const scrambled = scrambledTexts.get(textNode);
-      if (textNode.textContent === original || textNode.textContent === scrambled) {
-        return;
+    if (!originalTexts.has(textNode)) {
+      originalTexts.set(textNode, textNode.textContent);
+      if (!isInHoveredElement(textNode)) {
+        scrambleNode(textNode);
       }
+      return;
     }
 
-    originalTexts.set(textNode, textNode.textContent);
-    if (!isInHoveredElement(textNode)) {
-      scrambleNode(textNode);
+    const currentText = textNode.textContent;
+    const original = originalTexts.get(textNode);
+    const scrambled = scrambledTexts.get(textNode);
+
+    if (currentText === scrambled) {
+      return;
     }
+
+    if (isInHoveredElement(textNode)) {
+      if (currentText !== original) {
+        originalTexts.set(textNode, currentText);
+      }
+      return;
+    }
+
+    if (currentText !== original) {
+      originalTexts.set(textNode, currentText);
+    }
+
+    scrambleNode(textNode);
   }
 
   function rescanSubtree(root) {
